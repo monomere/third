@@ -1,5 +1,6 @@
 #![feature(never_type)]
 #![feature(associated_type_defaults)]
+#![feature(coroutines, coroutine_trait, stmt_expr_attributes, iter_from_coroutine)]
 
 pub trait GeometricSpace {
 	type Point;
@@ -28,12 +29,30 @@ impl ApproxEq for R {
 pub struct Pnt3 { pub x: R, pub y: R, pub z: R }
 
 impl Pnt3 {
-	pub fn new(x: R, y: R, z: R) -> Self {
+	pub const fn new(x: R, y: R, z: R) -> Self {
 		Self { x, y, z }
 	}
 
-	pub fn dot(self, o: Self) -> R {
+	pub const fn zero() -> Self {
+		Self::new(0.0, 0.0, 0.0)
+	}
+
+	pub const fn dot(self, o: Self) -> R {
 		self.x * o.x + self.y * o.y + self.z * o.z
+	}
+
+	/// Project self onto a unit sphere (normalize)
+	pub fn onto_sphere(self, radius: R) -> Self {
+		if self.approx_eq(Pnt3::zero()) {
+			Pnt3::zero()
+		} else {
+			let k = radius / (self.x*self.x+self.y*self.y+self.z*self.z).sqrt();
+			Self {
+				x: self.x * k,
+				y: self.y * k,
+				z: self.z * k,
+			}
+		}
 	}
 }
 
@@ -88,6 +107,10 @@ impl Vct3 {
 
 	pub const fn new(x: R, y: R, z: R) -> Self {
 		Self { x, y, z }
+	}
+
+	pub const fn zero() -> Self {
+		Self::new(0.0, 0.0, 0.0)
 	}
 
 	pub const fn nth(&self, n: usize) -> &R {
@@ -174,8 +197,20 @@ impl ApproxEq for Pnt2 {
 pub struct Vct2 { pub x: R, pub y: R }
 
 impl Vct2 {
-	pub fn dot(self, o: Self) -> R {
+	/// Computes the dot product of two vectors.
+	/// Note that this operation is commutative: `a.dot(b) == b.dot(a)`.
+	pub const fn dot(self, o: Self) -> R {
 		self.x * o.x + self.y * o.y
+	}
+
+	/// Magnitude squared. Same as `self.dot(self)`.
+	pub const fn magnitude2(self) -> R {
+		self.dot(self)
+	}
+
+	/// Magnitude of the vector, same as `self.magnitude2().sqrt()`.
+	pub fn magnitude(self) -> R {
+		self.dot(self).sqrt()
 	}
 }
 
@@ -231,8 +266,6 @@ impl GeometricSpace for GSpace2D {
 	}
 
 	fn line_between(a: Self::Point, b: Self::Point) -> Self::Line {
-		// (Vct2 { x: a.y - b.y, y: b.x - a.x },
-		//     - a.x * b.y + a.y * b.x)
 		(a, b - a)
 	}
 }
@@ -269,20 +302,18 @@ pub trait GeometricMap<In: GeometricSpace> {
 
 	fn project_ray(&self, p: In::Ray) ->
 		<Self::Out as GeometricSpace>::Ray;
+	
+	/// Get direction from point to camera.
+	fn get_back_dir(&self, p: In::Point) -> In::Vector;
 }
+
+/// Marker trait that specifies that a map is translation-invariant-ish.
+/// That means that `|C - Project(C + A)| = |Project(A)|`.
+pub trait AffineGeometricMap<In: GeometricSpace>: GeometricMap<In> {}
 
 /// Row-major
 #[derive(Clone)]
 pub struct Mtx3x3(pub [Vct3; 3]);
-
-// impl std::ops::MulAssign<&Mtx3x3> for Mtx3x3 {
-//     fn mul_assign(&mut self, rhs: &Mtx3x3) {
-//         self.x.
-//         rhs * self.column_n::<0>()
-//         self.y.dot(rhs.column_n::<0>())
-//         self.z.dot(rhs.column_n::<0>())
-//     }
-// }
 
 impl Mtx3x3 {
 	pub fn inverse(&self) -> Self {
@@ -407,9 +438,9 @@ impl Mtx3x3 {
 
 pub struct OrthoProjection {
 	mtx: Mtx3x3,
-	// imtx: Mtx3x3,
 	backdir: Vct3,
 }
+
 
 impl OrthoProjection {
 	pub fn new(mtx: Mtx3x3) -> Self {
@@ -417,26 +448,15 @@ impl OrthoProjection {
 		let backdir = &imtx * Vct3::new(0.0, 0.0, 1.0);
 		Self { mtx, backdir }
 	}
-
-	pub fn unproject_point_to_line(
-		&self,
-		p: Pnt2,
-		l: <GSpace3D as GeometricSpace>::Line,
-	) -> Pnt3 {
-		let plo = self.project_point(l.0);
-		let pld = self.project_vector(l.1);
-		// pldx*t = px - plox
-		// pldy*t = py - ploy
-		let v = p - plo;
-		let t = v.x / pld.x;
-		// let t = v.y / pld.y;
-		l.0 + l.1 * t
-	}
 }
 
+impl AffineGeometricMap<GSpace3D> for OrthoProjection {}
 impl GeometricMap<GSpace3D> for OrthoProjection {
 	type Out = GSpace2D;
 
+	fn get_back_dir(&self, p: <GSpace3D as GeometricSpace>::Point) -> <GSpace3D as GeometricSpace>::Vector {
+		self.backdir
+	}
 
 	fn project_point(&self, p: Pnt3) -> Pnt2 {
 		let p = &self.mtx * GSpace3D::radius_vector(p);
@@ -449,11 +469,6 @@ impl GeometricMap<GSpace3D> for OrthoProjection {
 	}
 
 	fn project_line(&self, l: (Pnt3, Vct3)) -> (Pnt2, Vct2) {
-		// let (org, dir) = p;
-		// let r = GSpace2D::radius_vector(self.project_point(org));
-		// let d = self.project_vector(dir);
-		// let x = (1.0 - (r.dot(d).powi(2) / d.dot(d) / r.dot(r))).sqrt();
-		// (d, x)
 		(self.project_point(l.0), self.project_vector(l.1))
 	}
 
@@ -464,17 +479,20 @@ impl GeometricMap<GSpace3D> for OrthoProjection {
 
 pub mod tess {
 	use crate::*;
+
 	pub trait Intersecting<Other> {
 		type Intersection;
 		fn intersect(&self, other: &Other) -> Self::Intersection;
 	}
 
-	struct True;
-	struct False;
-	trait Same<U> { type Result = False; }
-	impl<T> Same<T> for T { type Result = True; }
+	mod util {
+		pub struct True;
+		pub struct False;
+		pub trait Same<U> { type Result = False; }
+		impl<T> Same<T> for T { type Result = True; }
+	}
 	impl<T, U> Intersecting<T> for U where
-		T: Intersecting<U> + Same<U, Result = False>
+		T: Intersecting<U> + util::Same<U, Result = util::False>
 	{
 		type Intersection = T::Intersection;
 		fn intersect(&self, other: &T) -> Self::Intersection {
@@ -486,20 +504,23 @@ pub mod tess {
 	type Line3 = <GSpace3D as GeometricSpace>::Line;
 	// type Plane3 = <GSpace3D as GeometricSpace>::Plane;
 
-
 	#[allow(non_camel_case_types)]
 	pub enum Line3_Self_Intersection {
+		/// The two lines are the same.
 		Same(Line3),
-		Point(Pnt3),
+		/// A single point of intersection, respective parameters.
+		Point(Pnt3, R, R),
+		/// No intersection
 		None
 	}
 
 	#[allow(non_camel_case_types)]
 	pub enum Line2_Self_Intersection {
+		/// The lines are identical.
 		Same(Line2),
-		/// Point, t
+		/// Point, t1, t2.
 		Point(Pnt2, R, R),
-		/// The lines are parallel
+		/// The lines are parallel.
 		None
 	}
 
@@ -533,7 +554,7 @@ pub mod tess {
 				// ⎨ d2x*t2 + o2x = px
 				// ⎨ d1y*t1 + o1y = py
 				// ⎩ d2y*t2 + o2y = py
-				
+
 				let (c1, d1) = *self;
 				let (c2, d2) = *other;
 				if (d1.y * d2.x).approx_eq(d1.x * d2.y) || d2.y.approx_eq(0.0) {
@@ -541,20 +562,11 @@ pub mod tess {
 				}
 				let t1 = (c1.y*d2.x - c2.y*d2.x + (c2.x - c1.x)*d2.y)/(d1.x*d2.y - d1.y*d2.x);
 				let t2 = (c1.y*d1.x - c2.y*d1.x + (c2.x - c1.x)*d1.y)/(d1.x*d2.y - d1.y*d2.x);
-				// let t = if d1.x.approx_eq(d2.x) {
-				// 	(c2.y - o1.y) / (d1.y - d2.y)
-				// } else {
-				// 	(o2.x - o1.x) / (d1.x - d2.x)
-				// };
 				Self::Intersection::Point(c1 + d1 * t1, t1, t2)
 			}
 		}
 	}
 }
-
-// const fn use_coords<const N: usize>(a: Pnt2, b: Pnt2) {
-//     Pnt2([a.0[N]])
-// }
 
 fn aabb_between(a: Pnt2, b: Pnt2) -> (Pnt2, Pnt2) {
 	(
@@ -568,16 +580,6 @@ fn aabb_between(a: Pnt2, b: Pnt2) -> (Pnt2, Pnt2) {
 		},
 	)
 }
-// fn pnt2_in_tri(p1: Pnt2, p2: Pnt2, p3: Pnt2, p: Pnt2) -> bool {
-//  let d = (p2.y - p3.y)*(p1.x - p3.x) + (p3.x - p2.x)*(p1.y - p3.y);
-//  let a = ((p2.y - p3.y)*(p.x - p3.x) + (p3.x - p2.x)*(p.y - p3.y)) / d;
-//  let b = ((p3.y - p1.y)*(p.x - p3.x) + (p1.x - p3.x)*(p.y - p3.y)) / d;
-//  let c = 1.0 - a - b;
- 
-//  return 0.02 < a && a < 0.98
-// 	&& 0.02 < b && b < 0.98
-// 	&& 0.02 < c && c < 0.98;
-// }
 
 pub type Tri3 = (Pnt3, Pnt3, Pnt3);
 pub fn möller_trumbore_intersection(
@@ -610,12 +612,12 @@ pub fn möller_trumbore_intersection(
 	// At this stage we can compute t to find out where the intersection point is on the line.
 	let t = inv_det * e2.dot(s_cross_e1);
 
-	if t > f32::EPSILON { // ray intersection
+	if t > f32::EPSILON {
 		let intersection_point = origin + direction * t;
-		return Some(intersection_point);
-	}
-	else { // This means that there is a line intersection but not a ray intersection.
-		return None;
+		Some(intersection_point)
+	} else {
+		// This means that there is a line intersection but not a ray intersection.
+		None
 	}
 }
 
@@ -686,6 +688,21 @@ pub mod svg {
 		n
 	}
 
+
+	pub fn circle(
+		doc: &web_sys::Document,
+		c: Pnt2,
+		r: R,
+		st: &Style,
+	) -> web_sys::Element {
+		let n = doc.create_element_ns(SVGNS, "circle").unwrap();
+		n.set_attribute("cx", &c.x.to_string()).unwrap();
+		n.set_attribute("cy", &c.y.to_string()).unwrap();
+		n.set_attribute("r", &r.to_string()).unwrap();
+		st.assign_attrs(&n).unwrap();
+		n
+	}
+
 	pub fn triangle(
 		doc: &web_sys::Document,
 		a: Pnt2,
@@ -699,8 +716,309 @@ pub mod svg {
 		st.assign_attrs(&n).unwrap();
 		n
 	}
+
+	pub fn polygon(
+		doc: &web_sys::Document,
+		mut it: impl Iterator<Item = Pnt2>,
+		st: &Style,
+	) -> web_sys::Element {
+		let n = doc.create_element_ns(SVGNS, "path").unwrap();
+		let first = it.next().expect("Expected at least one point in svg::polygon");
+		let mut res = format!("M{},{}", first.x, first.y);
+		for p in it {
+			res += &format!(" L{},{}", p.x, p.y);
+		}
+		res += " z";
+		n.set_attribute("d", &res).unwrap();
+		st.assign_attrs(&n).unwrap();
+		n
+	}
 }
 
+pub mod render {
+	use std::{borrow::Cow, collections::BTreeSet};
+	use crate::*;
+
+	pub enum PrimitiveStyle {
+		Major,
+		Minor,
+		AxisX,
+		AxisY,
+		AxisZ,
+	}
+
+	pub enum PrimitiveShape<'a> {
+		/// A single point.
+		Point(Pnt3),
+		/// A line segment between two points.
+		Segment(Pnt3, Pnt3),
+		/// A 2D circle: `(center, normal)`, `radius = normal.magnitude2()`.
+		Circle(Pnt3, Vct3),
+		/// A 2D polygon.
+		Polygon(Cow<'a, [Pnt3]>),
+		/// A sphere.
+		Sphere(Pnt3, R),
+	}
+
+	pub trait Shape<In: GeometricSpace> {
+		fn render<'a>(&self) -> impl Iterator<Item = (PrimitiveStyle, PrimitiveShape<'a>)>;
+	}
+
+	pub struct SphereShape {
+		pub center: Pnt3,
+		pub radius: R,
+	}
+
+	impl Shape<GSpace3D> for SphereShape {
+		fn render<'a>(&self,) -> impl Iterator<Item = (PrimitiveStyle, PrimitiveShape<'a>)> {
+			std::iter::once((PrimitiveStyle::Major, PrimitiveShape::Sphere(self.center, self.radius)))
+		}
+	}
+
+	pub struct PolyhedronShape<'a> {
+		pub vertices: Cow<'a, [Pnt3]>,
+		pub edges: Cow<'a, [(usize, usize)]>,
+		pub faces: Cow<'a, [Cow<'a, [usize]>]>,
+	}
+
+	impl PolyhedronShape<'_> {
+		pub fn octahedron(off: Vct3, r: R) -> Self {
+			Self {
+				vertices: vec![
+					Pnt3::new(-1.0, -1.0,  0.0).onto_sphere(r) + off,
+					Pnt3::new( 1.0, -1.0,  0.0).onto_sphere(r) + off,
+					Pnt3::new( 1.0,  1.0,  0.0).onto_sphere(r) + off,
+					Pnt3::new(-1.0,  1.0,  0.0).onto_sphere(r) + off,
+					Pnt3::new( 0.0,  0.0,  1.0).onto_sphere(r) + off,
+					Pnt3::new( 0.0,  0.0, -1.0).onto_sphere(r) + off,
+				].into(),
+				edges: (vec![
+					(0, 1),
+					(1, 2),
+					(2, 3),
+					(3, 0),
+					(0, 4),
+					(1, 4),
+					(2, 4),
+					(3, 4),
+					(0, 5),
+					(1, 5),
+					(2, 5),
+					(3, 5),
+				]).into(),
+				faces: (vec![
+					(&[0, 1, 4]).into(),
+					(&[1, 2, 4]).into(),
+					(&[2, 3, 4]).into(),
+					(&[3, 0, 4]).into(),
+					(&[0, 1, 5]).into(),
+					(&[1, 2, 5]).into(),
+					(&[2, 3, 5]).into(),
+					(&[3, 0, 5]).into(),
+				]).into()
+			}
+		}
+	}
+
+	impl Shape<GSpace3D> for PolyhedronShape<'_> {
+		fn render<'a>(&self,) -> impl Iterator<Item = (PrimitiveStyle, PrimitiveShape<'a>)> {
+			std::iter::from_coroutine(#[coroutine] || {
+				for (ai, bi) in self.edges.iter() {
+					let (a, b) = (self.vertices[*ai], self.vertices[*bi]);
+					yield (PrimitiveStyle::Major, PrimitiveShape::Segment(a, b))
+				}
+				for idxs in self.faces.iter() {
+					yield (PrimitiveStyle::Major, PrimitiveShape::Polygon(
+						idxs.iter().map(|i| self.vertices[*i]).collect::<Vec<_>>().into()
+					))
+				}
+			})
+		}
+	}
+
+	enum TesselatedPrimitiveShape {
+		Segment(Pnt3, BTreeSet<isize>, Pnt3),
+	}
+
+	pub struct SvgRenderer<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> {
+		doc: &'a web_sys::Document,
+		root: web_sys::Element,
+		map: &'m M,
+		prims: Vec<(PrimitiveStyle, PrimitiveShape<'m>)>,
+	}
+
+	impl<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> SvgRenderer<'a, 'm, M> {
+		pub fn new(doc: &'a web_sys::Document, map: &'m M) -> Self {
+			let root = svg::root(doc, 2.0);
+			Self {
+				doc,
+				root,
+				map,
+				prims: vec![],
+			}
+		}
+
+		pub fn get_root(self) -> web_sys::Element {
+			self.root
+		}
+
+		fn style_of(&self, s: &PrimitiveStyle) -> svg::Style {
+			match s {
+				PrimitiveStyle::Major => svg::Style { stroke_width: Some(0.03), ..Default::default() },
+				PrimitiveStyle::Minor => svg::Style { stroke_width: Some(0.02), ..Default::default() },
+				PrimitiveStyle::AxisX => svg::Style {
+					stroke: Some("red".into()),
+					stroke_width: Some(0.02),
+					..Default::default()
+				},
+				PrimitiveStyle::AxisY => svg::Style {
+					stroke: Some("green".into()),
+					stroke_width: Some(0.02),
+					..Default::default()
+				},
+				PrimitiveStyle::AxisZ => svg::Style {
+					stroke: Some("blue".into()),
+					stroke_width: Some(0.02),
+					..Default::default()
+				},
+			}
+		}
+
+		// fn project_primitive(&self, p: PrimitiveShape) ->  {
+		// 	match p {
+		// 		PrimitiveShape::Point(st, p) => {
+		// 			let st =self.style_of(st);
+		// 			svg::circle(self.doc, p, st.stroke_width.unwrap(), &st)
+		// 		},
+		// 		PrimitiveShape::Segment(st, a, b) => svg::line(self.doc, a, b, &self.style_of(st)),
+		// 		PrimitiveShape::Circle(st, c, r) => svg::circle(self.doc, c, r, &self.style_of(st)),
+		// 		PrimitiveShape::Polygon(st, ps) => svg::polygon(self.doc, ps.iter().copied(), &self.style_of(st)),
+		// 	}
+		// }
+	
+		pub fn render_axes(&mut self, r: R) {
+			self.prims.push((PrimitiveStyle::AxisX,
+				PrimitiveShape::Segment(Pnt3::zero(), Pnt3::new(r, 0.0, 0.0))));
+			self.prims.push((PrimitiveStyle::AxisY,
+				PrimitiveShape::Segment(Pnt3::zero(), Pnt3::new(0.0, r, 0.0))));
+			self.prims.push((PrimitiveStyle::AxisZ,
+				PrimitiveShape::Segment(Pnt3::zero(), Pnt3::new(0.0, 0.0, r))));
+		}
+
+		pub fn render_shape(&mut self, s: &impl Shape<GSpace3D>) {
+			self.prims.extend(s.render());
+			// for prim in  {
+			// 	self.root.append_child(&self.make_primitive(prim)).unwrap();
+			// }
+		}
+
+		fn tesselate(
+			&self
+		) -> impl Iterator<Item = (&PrimitiveStyle, TesselatedPrimitiveShape)> {
+			// let segment_count = self.prims.iter()
+			// 	.filter(|x| matches!(x.1, PrimitiveShape::Segment(..))).count();
+			let mut tess_lines = self.prims.iter().filter_map(|x| match x.1 {
+				PrimitiveShape::Segment(a, b) => Some((&x.0, a, b)),
+				_ => None,
+			}).map(|(st, a, b)| {
+				let mut ts = std::collections::BTreeSet::new();
+				ts.insert(1024);
+				(st, (a, ts, b))
+			}).collect::<Vec<_>>();
+
+			for i in 0..tess_lines.len() {
+				for j in 0..tess_lines.len() {
+					if i == j { continue }
+					let [
+						(_, (a1, ts, b1)),
+						(_, (a2,  _, b2)),
+					] = tess_lines.get_disjoint_mut([i, j]).unwrap();
+					let pa1 = self.map.project_point(*a1);
+					let pb1 = self.map.project_point(*b1);
+					let pa2 = self.map.project_point(*a2);
+					let pb2 = self.map.project_point(*b2);
+					let (bba1, bbb1) = aabb_between(pa1, pb1);
+					let (bba2, bbb2) = aabb_between(pa2, pb2);
+					let pl1 = GSpace2D::line_between(pa1, pb1);
+					let pl2 = GSpace2D::line_between(pa2, pb2);
+					use tess::Intersecting;
+					match pl1.intersect(&pl2) {
+						tess::Line2_Self_Intersection::Point(p, t1, _) => {
+							if p.is_inside(bba1, bbb1)
+									&& p.is_inside(bba2, bbb2) {
+								ts.insert((t1 * 1024.0) as isize);
+							}
+						}
+						_ => {}
+					}
+				}
+			}
+
+			tess_lines.into_iter().map(|(st, (a, ts, b))|
+				(st, TesselatedPrimitiveShape::Segment(a, ts, b)))
+		}
+
+		pub fn draw(&self) {
+			let tess_lines = self.tesselate();
+			for (_, (st, TesselatedPrimitiveShape::Segment(a, tess, c)))
+				in tess_lines.enumerate()
+			{
+				let mut o = a;
+				for bi in tess.iter() {
+					let t = *bi as f32 / 1024.0;
+					let b = a + (c - a) * t;
+					if o.approx_eq(b) { continue; }
+					let m = o + (b - o) * 0.5;
+					let x = self.prims
+						.iter()
+						.filter_map(|(_, x)| match x {
+							PrimitiveShape::Polygon(pts) => Some(pts),
+							_ => None
+						})
+						.any(|pts| {
+							// let pts = (fa, fb, fc)
+							möller_trumbore_intersection(
+								m,
+								self.map.get_back_dir(m),
+								(
+									pts[0],
+									pts[1],
+									pts[2],
+								)
+							).is_some()
+						});
+					let po = self.map.project_point(o);
+					let pb = self.map.project_point(b);
+					self.root.append_child(
+							&svg::line(self.doc, po, pb, &svg::Style {
+							stroke_dasharray: x.then_some(0.05),
+							..self.style_of(st)
+						})
+					).unwrap();
+					o = b;
+				}
+			}
+	
+			for pts in
+				self.prims.iter().filter_map(|(_, x)| match x {
+					PrimitiveShape::Polygon(pts) => Some(pts),
+					_ => None
+				}) {
+				self.root.append_child(
+					&svg::polygon(
+						self.doc,
+						pts.iter().map(|p| self.map.project_point(*p)),
+						&svg::Style {
+							stroke: Some("none".into()),
+							fill: Some("#668bb623".into()),
+							..Default::default()
+						}
+					)
+				).unwrap();
+			}
+		}
+	}
+}
 
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn init() {
@@ -718,133 +1036,13 @@ pub fn example_1(
 		Mtx3x3::rotation_y(rot_y) *
 		Mtx3x3::rotation_z(rot_z)
 	);
-	let pts = [
-		Pnt3::new(-1.0, -1.0,  0.0),
-		Pnt3::new( 1.0, -1.0,  0.0),
-		Pnt3::new( 1.0,  1.0,  0.0),
-		Pnt3::new(-1.0,  1.0,  0.0),
-		Pnt3::new( 0.0,  0.0,  1.0),
-		Pnt3::new( 0.0,  0.0, -1.0),
-	];
-	let lines = [
-		(0, 1),
-		(1, 2),
-		(2, 3),
-		(3, 0),
-		(0, 4),
-		(1, 4),
-		(2, 4),
-		(3, 4),
-		(0, 5),
-		(1, 5),
-		(2, 5),
-		(3, 5),
-	];
-	let faces = [
-		(0, 1, 4),
-		(1, 2, 4),
-		(2, 3, 4),
-		(3, 0, 4),
-	];
 
+	let poly = render::PolyhedronShape::octahedron(Vct3::zero(), 1.0);
 	let web_window = web_sys::window().unwrap();
 	let web_doc = web_window.document().unwrap();
-
-	let doc = svg::root(&web_doc, 2.0);
-	
-	for (vt, col) in [
-		(Vct3::new(1.0, 0.0, 0.0), "red"),
-		(Vct3::new(0.0, 1.0, 0.0), "green"),
-		(Vct3::new(0.0, 0.0, 1.0), "blue"),
-	] {
-		let org = proj.project_point(Pnt3::new(0.0, 0.0, 0.0));
-		let pvt = proj.project_vector(vt * 2.0);
-		doc.append_child(
-			&svg::line(&web_doc, org, org + pvt, &svg::Style {
-				stroke: Some(col.into()),
-				stroke_width: Some(0.02),
-				..Default::default()
-			})
-		).unwrap();
-	}
-
-	let mut tess_lines = (0..lines.len()).map(|i| {
-		let a = pts[lines[i].0];
-		let b = pts[lines[i].1];
-		let mut ts = std::collections::BTreeSet::new();
-		ts.insert(1024);
-		(a, ts, b)
-	}).collect::<Vec<_>>();
-	for i in 0..lines.len() {
-		for j in 0..lines.len() {
-			if i == j { continue }
-			let (a1i, b1i) = lines[i];
-			let (a2i, b2i) = lines[j];
-			let (a1, b1) = (pts[a1i], pts[b1i]);
-			let (a2, b2) = (pts[a2i], pts[b2i]);
-			let pa1 = proj.project_point(a1);
-			let pb1 = proj.project_point(b1);
-			let pa2 = proj.project_point(a2);
-			let pb2 = proj.project_point(b2);
-			let (bba1, bbb1) = aabb_between(pa1, pb1);
-			let (bba2, bbb2) = aabb_between(pa2, pb2);
-			let pl1 = GSpace2D::line_between(pa1, pb1);
-			let pl2 = GSpace2D::line_between(pa2, pb2);
-			use tess::Intersecting;
-			match pl1.intersect(&pl2) {
-				tess::Line2_Self_Intersection::Point(p, t1, _) => {
-					if p.is_inside(bba1, bbb1)
-							&& p.is_inside(bba2, bbb2) {
-						tess_lines[i].1.insert((t1 * 1024.0) as isize);
-					}
-				}
-				_ => {}
-			}
-		}
-	}
-
-	for (_, (a, tess, c)) in tess_lines.iter().enumerate() {
-		let mut o = *a;
-		for bi in tess.iter() {
-			let t = *bi as f32 / 1024.0;
-			let b = *a + (*c - *a) * t;
-			if o.approx_eq(b) { continue; }
-			let m = o + (b - o) * 0.5;
-			let x = faces.iter().any(|(fa, fb, fc)| {
-				möller_trumbore_intersection(m, proj.backdir, (
-					pts[*fa],
-					pts[*fb],
-					pts[*fc],
-				)).is_some()
-			});
-			let po = proj.project_point(o);
-			let pb = proj.project_point(b);
-			doc.append_child(
-					&svg::line(&web_doc, po, pb, &svg::Style {
-					stroke: Some("black".into()),
-					stroke_width: Some(0.02),
-					stroke_dasharray: x.then_some(0.05),
-					..Default::default()
-				})
-			).unwrap();
-			o = b;
-		}
-	}
-
-	for (ai, bi, ci) in faces {
-		let (a, b, c) = (pts[ai], pts[bi], pts[ci]);
-		let (pa, pb, pc) = (
-			proj.project_point(a),
-			proj.project_point(b),
-			proj.project_point(c),
-		);
-		doc.append_child(
-			&svg::triangle(&web_doc, pa, pb, pc, &svg::Style {
-				fill: Some("#668bb623".into()),
-				..Default::default()
-			})
-		).unwrap();
-	}
-
-	doc.into()
+	let mut svgr = render::SvgRenderer::new(&web_doc, &proj);
+	svgr.render_axes(2.0);
+	svgr.render_shape(&poly);
+	svgr.draw();
+	svgr.get_root().into()
 }

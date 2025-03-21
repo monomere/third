@@ -1,11 +1,11 @@
-import initWasm, { example_1, init } from "./pkg/third.js";
+import setupWasm, { example_1, init } from "./pkg/third.js";
 
-await initWasm();
+await setupWasm();
 
 init();
 
 /** @type {SVGSVGElement} */
-let svg = document.body.appendChild(example_1(45.0, 0.0, 0.0));
+let svg = document.body.appendChild(example_1(65.0, 0.0, 25.0));
 
 
 function createAxis(name, initialValue) {
@@ -25,15 +25,21 @@ const inpX = createAxis("X", 65.0);
 const inpY = createAxis("Y", 0.0);
 const inpZ = createAxis("Z", 25.0);
 
-function rerender() {
+let hadInput = false;
+
+let rerender;
+requestAnimationFrame(rerender = () => {
+	if (!hadInput) { requestAnimationFrame(rerender); return; }
+	hadInput = false;
 	const rX = Number.parseFloat(inpX.value) / 180 * Math.PI;
 	const rY = Number.parseFloat(inpY.value) / 180 * Math.PI;
 	const rZ = Number.parseFloat(inpZ.value) / 180 * Math.PI;
 	const newSvg = example_1(rX, rY, rZ);
 	svg.replaceWith(newSvg);
 	svg = newSvg;
-}
+	requestAnimationFrame(rerender);
+});
 
-inpX.oninput = rerender;
-inpY.oninput = rerender;
-inpZ.oninput = rerender;
+inpX.oninput = () => hadInput = true;
+inpY.oninput = () => hadInput = true;
+inpZ.oninput = () => hadInput = true;
