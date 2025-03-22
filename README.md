@@ -7,7 +7,7 @@ Rendering 3d diagrams to svg with depth. Written in Rust and compiled to WebAsse
 Todo list:
 
 - [x] Clean up the code a bit, wrap up and abstract away the rendering logic, implement `trait Shape` or something similar.
-- [ ] Fix precision issues (?).
+- [x] Fix precision issues (?).
 - [ ] Do 3D tesselation before 2D tesselation.
 - [ ] Add support for spheres and circular arcs.
 - [ ] Add support for vectors (arrows).

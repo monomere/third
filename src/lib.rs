@@ -313,7 +313,13 @@ pub trait GeometricMap<In: GeometricSpace> {
 
 /// Marker trait that specifies that a map is translation-invariant-ish.
 /// That means that `|C - Project(C + A)| = |Project(A)|`.
-pub trait AffineGeometricMap<In: GeometricSpace>: GeometricMap<In> {}
+/// Implies linearity *I think*.
+pub trait AffineGeometricMap<In: GeometricSpace>: LinearGeometricMap<In> {}
+
+/// Marker trait that specifies that a map is linear.
+pub trait LinearGeometricMap<In: GeometricSpace>: GeometricMap<In> {
+	fn matrix(&self) -> &Mtx3x3;
+}
 
 /// Row-major
 #[derive(Clone)]
@@ -451,6 +457,11 @@ impl OrthoProjection {
 }
 
 impl AffineGeometricMap<GSpace3D> for OrthoProjection {}
+impl LinearGeometricMap<GSpace3D> for OrthoProjection {
+	fn matrix(&self) -> &Mtx3x3 {
+		&self.mtx
+	}
+}
 impl GeometricMap<GSpace3D> for OrthoProjection {
 	type Out = GSpace2D;
 
@@ -640,6 +651,8 @@ pub mod svg {
 		pub stroke: Option<Cow<'a, str>>,
 		pub stroke_width: Option<f32>,
 		pub stroke_dasharray: Option<f32>,
+		pub non_scaling_stroke: Option<bool>,
+		pub transform_matrix: Option<[R; 6]>,
 	}
 
 	impl Style<'_> {
@@ -650,11 +663,26 @@ pub mod svg {
 			if let Some(v) = &self.stroke {
 				n.set_attribute("stroke", v)?;
 			}
-			if let Some(v) = &self.stroke_width {
+			if let Some(v) = self.stroke_width {
 				n.set_attribute("stroke-width", &v.to_string())?;
 			}
-			if let Some(v) = &self.stroke_dasharray {
+			if let Some(v) = self.stroke_dasharray {
 				n.set_attribute("stroke-dasharray", &v.to_string())?;
+			}
+			if let Some(v) = self.non_scaling_stroke {
+				n.set_attribute("vector-effect", if v {
+					"non-scaling-stroke"
+				} else {
+					"none"
+				})?;
+			} else {
+				n.set_attribute("vector-effect", "non-scaling-stroke")?;
+			}
+			if let Some(v) = &self.transform_matrix {
+				n.set_attribute("transform", &format!(
+					"matrix({} {} {} {} {} {})",
+					v[0], v[3], v[1], v[4], v[2], v[5]
+				))?;
 			}
 			Ok(())
 		}
@@ -668,6 +696,7 @@ pub mod svg {
 		doc.set_attribute("width", "300").unwrap();
 		doc.set_attribute("height", "300").unwrap();
 		doc.set_attribute("fill", "black").unwrap();
+		// doc.set_attribute("vector-effect", "non-scaling-stroke").unwrap();
 		// doc.set_attribute("xmlns", SVGNS.unwrap()).unwrap();
 		doc
 	}
@@ -882,14 +911,18 @@ pub mod render {
 		Sphere(Pnt3, R, Vec<(Vct3, R)>),
 	}
 
-	pub struct SvgRenderer<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> {
+	pub struct SvgRenderer<'a, 'm, M: GeometricMap<GSpace3D, Out = GSpace2D>> {
 		doc: &'a web_sys::Document,
 		root: web_sys::Element,
 		map: &'m M,
 		prims: Vec<(PrimitiveStyle, PrimitiveShape<'m>)>,
 	}
 
-	impl<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> SvgRenderer<'a, 'm, M> {
+	impl<
+		'a,
+		'm,
+		M: AffineGeometricMap<GSpace3D, Out = GSpace2D>
+	> SvgRenderer<'a, 'm, M> {
 		pub fn new(doc: &'a web_sys::Document, map: &'m M) -> Self {
 			let root = svg::root(doc, 2.0);
 			Self {
@@ -907,26 +940,26 @@ pub mod render {
 		fn style_of(&self, s: &PrimitiveStyle) -> svg::Style {
 			match s {
 				PrimitiveStyle::Major => svg::Style {
-					stroke_width: Some(0.03),
+					stroke_width: Some(3.0),
 					..Default::default()
 				},
 				PrimitiveStyle::Minor => svg::Style {
-					stroke_width: Some(0.02),
+					stroke_width: Some(2.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisX => svg::Style {
 					stroke: Some("red".into()),
-					stroke_width: Some(0.02),
+					stroke_width: Some(2.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisY => svg::Style {
 					stroke: Some("green".into()),
-					stroke_width: Some(0.02),
+					stroke_width: Some(2.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisZ => svg::Style {
 					stroke: Some("blue".into()),
-					stroke_width: Some(0.02),
+					stroke_width: Some(2.0),
 					..Default::default()
 				},
 			}
@@ -1060,7 +1093,7 @@ pub mod render {
 							po,
 							pb,
 							&svg::Style {
-								stroke_dasharray: x.then_some(0.05),
+								stroke_dasharray: x.then_some(5.0),
 								..self.style_of(st)
 							},
 						))
@@ -1079,6 +1112,7 @@ pub mod render {
 					&svg::circle(
 						self.doc,
 						self.map.project_point(c),
+						// TODO
 						r, // self.map.project_vector(Vct3::new(r, 0.0, 0.0)).magnitude(),
 						&svg::Style {
 							fill: Some("none".into()),
@@ -1086,6 +1120,11 @@ pub mod render {
 						}
 					)
 				).unwrap();
+				for (norm, dist) in tess {
+					let mtx = self.map.matrix();
+
+					// t.
+				}
 			}
 
 			for pts in self.prims.iter().filter_map(|(_, x)| match x {

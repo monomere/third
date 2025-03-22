@@ -4,8 +4,11 @@ await setupWasm();
 
 init();
 
+const toRadians = a => a / 180.0 * Math.PI;
+
 /** @type {SVGSVGElement} */
-let svg = document.body.appendChild(example_1(65.0, 0.0, 25.0));
+let svg = document.body.appendChild(
+	example_1(toRadians(65.0), 0.0, toRadians(25.0)));
 
 
 function createAxis(name, initialValue) {
@@ -31,9 +34,9 @@ let rerender;
 requestAnimationFrame(rerender = () => {
 	if (!hadInput) { requestAnimationFrame(rerender); return; }
 	hadInput = false;
-	const rX = Number.parseFloat(inpX.value) / 180 * Math.PI;
-	const rY = Number.parseFloat(inpY.value) / 180 * Math.PI;
-	const rZ = Number.parseFloat(inpZ.value) / 180 * Math.PI;
+	const rX = toRadians(Number.parseFloat(inpX.value));
+	const rY = toRadians(Number.parseFloat(inpY.value));
+	const rZ = toRadians(Number.parseFloat(inpZ.value));
 	const newSvg = example_1(rX, rY, rZ);
 	svg.replaceWith(newSvg);
 	svg = newSvg;
