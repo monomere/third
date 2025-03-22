@@ -21,7 +21,7 @@ pub type R = f32;
 
 impl ApproxEq for R {
 	fn approx_eq(self, other: Self) -> bool {
-		(self - other).abs() <= 1e-5
+		(self - other).abs() <= 1e-7
 	}
 }
 
@@ -456,7 +456,7 @@ impl GeometricMap<GSpace3D> for OrthoProjection {
 
 	fn get_back_dir(
 		&self,
-		p: <GSpace3D as GeometricSpace>::Point,
+		_: <GSpace3D as GeometricSpace>::Point,
 	) -> <GSpace3D as GeometricSpace>::Vector {
 		self.backdir
 	}
@@ -588,6 +588,7 @@ fn aabb_between(a: Pnt2, b: Pnt2) -> (Pnt2, Pnt2) {
 }
 
 pub type Tri3 = (Pnt3, Pnt3, Pnt3);
+
 pub fn möller_trumbore_intersection(
 	origin: Pnt3,
 	direction: Vct3,
@@ -599,7 +600,7 @@ pub fn möller_trumbore_intersection(
 	let ray_cross_e2 = direction.cross(e2);
 	let det = e1.dot(ray_cross_e2);
 
-	if det > -f32::EPSILON && det < f32::EPSILON {
+	if det.approx_eq(0.0) {
 		return None; // This ray is parallel to this triangle.
 	}
 
@@ -618,7 +619,7 @@ pub fn möller_trumbore_intersection(
 	// At this stage we can compute t to find out where the intersection point is on the line.
 	let t = inv_det * e2.dot(s_cross_e1);
 
-	if t > f32::EPSILON {
+	if t > 1e-6 {
 		let intersection_point = origin + direction * t;
 		Some(intersection_point)
 	} else {
@@ -749,6 +750,18 @@ pub mod render {
 		AxisZ,
 	}
 
+	impl PrimitiveStyle {
+		fn is_transparent(&self) -> bool {
+			match self {
+				PrimitiveStyle::Major => false,
+				PrimitiveStyle::Minor => false,
+				PrimitiveStyle::AxisX => true,
+				PrimitiveStyle::AxisY => true,
+				PrimitiveStyle::AxisZ => true,
+			}
+		}
+	}
+
 	pub enum PrimitiveShape<'a> {
 		/// A single point.
 		Point(Pnt3),
@@ -771,6 +784,15 @@ pub mod render {
 		pub radius: R,
 	}
 
+	impl SphereShape {
+		pub fn new(center: Pnt3, radius: R) -> Self {
+			Self {
+				center,
+				radius,
+			}
+		}
+	}
+
 	impl Shape<GSpace3D> for SphereShape {
 		fn render<'a>(&self) -> impl Iterator<Item = (PrimitiveStyle, PrimitiveShape<'a>)> {
 			std::iter::once((
@@ -787,7 +809,8 @@ pub mod render {
 	}
 
 	impl PolyhedronShape<'_> {
-		pub fn octahedron(off: Vct3, r: R) -> Self {
+		pub fn octahedron(center: Pnt3, r: R) -> Self {
+			let off = GSpace3D::radius_vector(center);
 			Self {
 				vertices: vec![
 					Pnt3::new(-1.0, -1.0, 0.0).onto_sphere(r) + off,
@@ -856,6 +879,7 @@ pub mod render {
 
 	enum TesselatedPrimitiveShape {
 		Segment(Pnt3, BTreeSet<isize>, Pnt3),
+		Sphere(Pnt3, R, Vec<(Vct3, R)>),
 	}
 
 	pub struct SvgRenderer<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> {
@@ -942,7 +966,9 @@ pub mod render {
 			// }
 		}
 
-		fn tesselate(&self) -> impl Iterator<Item = (&PrimitiveStyle, TesselatedPrimitiveShape)> {
+		fn tesselate(
+			&self
+		) -> impl Iterator<Item = (&PrimitiveStyle, TesselatedPrimitiveShape)> + Clone {
 			// let segment_count = self.prims.iter()
 			// 	.filter(|x| matches!(x.1, PrimitiveShape::Segment(..))).count();
 			let mut tess_lines = self
@@ -964,7 +990,10 @@ pub mod render {
 					if i == j {
 						continue;
 					}
-					let [(_, (a1, ts, b1)), (_, (a2, _, b2))] = tess_lines.get_disjoint_mut([i, j]).unwrap();
+					let [(st1, (a1, ts, b1)), (st2, (a2, _, b2))] = tess_lines.get_disjoint_mut([i, j]).unwrap();
+					if st1.is_transparent() || st2.is_transparent() {
+						continue;
+					}
 					let pa1 = self.map.project_point(*a1);
 					let pb1 = self.map.project_point(*b1);
 					let pa2 = self.map.project_point(*a2);
@@ -988,11 +1017,20 @@ pub mod render {
 			tess_lines
 				.into_iter()
 				.map(|(st, (a, ts, b))| (st, TesselatedPrimitiveShape::Segment(a, ts, b)))
+				.chain(self.prims.iter().filter_map(|(st, pr)| match pr {
+					PrimitiveShape::Sphere(center, radius) =>
+						Some((st, TesselatedPrimitiveShape::Sphere(*center, *radius, vec![]))),
+					_ => None,
+				}))
 		}
 
 		pub fn draw(&self) {
-			let tess_lines = self.tesselate();
-			for (_, (st, TesselatedPrimitiveShape::Segment(a, tess, c))) in tess_lines.enumerate() {
+			let tesselated = self.tesselate();
+			let tess_lines = tesselated.clone().filter_map(|(st, pr)| match pr {
+				TesselatedPrimitiveShape::Segment(a, tess, c) => Some((st, a, tess, c)),
+				_ => None
+			});
+			for (_, (st, a, tess, c)) in tess_lines.enumerate() {
 				let mut o = a;
 				for bi in tess.iter() {
 					let t = *bi as f32 / 1024.0;
@@ -1031,6 +1069,25 @@ pub mod render {
 				}
 			}
 
+			let tess_spheres = tesselated.clone().filter_map(|(st, pr)| match pr {
+				TesselatedPrimitiveShape::Sphere(c, r, tess) => Some((st, c, r, tess)),
+				_ => None
+			});
+
+			for (_, (st, c, r, tess)) in tess_spheres.enumerate() {
+				self.root.append_child(
+					&svg::circle(
+						self.doc,
+						self.map.project_point(c),
+						r, // self.map.project_vector(Vct3::new(r, 0.0, 0.0)).magnitude(),
+						&svg::Style {
+							fill: Some("none".into()),
+							..self.style_of(st)
+						}
+					)
+				).unwrap();
+			}
+
 			for pts in self.prims.iter().filter_map(|(_, x)| match x {
 				PrimitiveShape::Polygon(pts) => Some(pts),
 				_ => None,
@@ -1063,12 +1120,12 @@ pub fn example_1(rot_x: f32, rot_y: f32, rot_z: f32) -> wasm_bindgen::JsValue {
 		Mtx3x3::rotation_x(rot_x) * Mtx3x3::rotation_y(rot_y) * Mtx3x3::rotation_z(rot_z),
 	);
 
-	let poly = render::PolyhedronShape::octahedron(Vct3::zero(), 1.0);
 	let web_window = web_sys::window().unwrap();
 	let web_doc = web_window.document().unwrap();
 	let mut svgr = render::SvgRenderer::new(&web_doc, &proj);
 	svgr.render_axes(2.0);
-	svgr.render_shape(&poly);
+	svgr.render_shape(&render::PolyhedronShape::octahedron(Pnt3::zero(), 1.0));
+	svgr.render_shape(&render::SphereShape::new(Pnt3::zero(), 1.0));
 	svgr.draw();
 	svgr.get_root().into()
 }
