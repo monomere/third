@@ -119,6 +119,8 @@ impl Vct3 {
 		Self::new(0.0, 0.0, 0.0)
 	}
 
+	/// Return a reference to the `n`th element of the vector.
+	/// If `n` > 2, the behavior is undefined.
 	pub const fn nth(&self, n: usize) -> &R {
 		match n {
 			0 => &self.x,
@@ -128,6 +130,8 @@ impl Vct3 {
 		}
 	}
 
+	/// Return a mutable reference to the `n`th element of the vector.
+	/// If `n` > 2, the behavior is undefined.
 	pub const fn nth_mut(&mut self, n: usize) -> &mut R {
 		match n {
 			0 => &mut self.x,
@@ -135,6 +139,18 @@ impl Vct3 {
 			2 => &mut self.z,
 			_ => unreachable!(),
 		}
+	}
+
+	/// The magnitude of the vector squared.
+	/// Identical to `self.dot(self)`.
+	pub fn magnitude2(&self) -> R {
+		self.dot(*self)
+	}
+
+	/// The magnitude of the vector.
+	/// Identical to `self.magnitude2().sqrt()`.
+	pub fn magnitude(&self) -> R {
+		self.magnitude2().sqrt()
 	}
 }
 
@@ -165,6 +181,10 @@ pub struct Pnt2 {
 impl Pnt2 {
 	pub fn is_inside(self, min: Pnt2, max: Pnt2) -> bool {
 		min.x <= self.x && self.x <= max.x && min.y <= self.y && self.y <= max.y
+	}
+
+	pub const fn new(x: R, y: R) -> Self {
+		Self { x, y }
 	}
 }
 
@@ -322,7 +342,7 @@ pub trait LinearGeometricMap<In: GeometricSpace>: GeometricMap<In> {
 }
 
 /// Row-major
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Mtx3x3(pub [Vct3; 3]);
 
 impl Mtx3x3 {
@@ -652,7 +672,7 @@ pub mod svg {
 		pub stroke_width: Option<f32>,
 		pub stroke_dasharray: Option<f32>,
 		pub non_scaling_stroke: Option<bool>,
-		pub transform_matrix: Option<[R; 6]>,
+		pub transform_matrix: Option<&'a Mtx3x3>,
 	}
 
 	impl Style<'_> {
@@ -670,19 +690,24 @@ pub mod svg {
 				n.set_attribute("stroke-dasharray", &v.to_string())?;
 			}
 			if let Some(v) = self.non_scaling_stroke {
-				n.set_attribute("vector-effect", if v {
-					"non-scaling-stroke"
-				} else {
-					"none"
-				})?;
+				n.set_attribute(
+					"vector-effect",
+					if v { "non-scaling-stroke" } else { "none" },
+				)?;
 			} else {
 				n.set_attribute("vector-effect", "non-scaling-stroke")?;
 			}
 			if let Some(v) = &self.transform_matrix {
-				n.set_attribute("transform", &format!(
-					"matrix({} {} {} {} {} {})",
-					v[0], v[3], v[1], v[4], v[2], v[5]
-				))?;
+				n.set_attribute(
+					"style",
+					&format!(
+						"transform: matrix3d({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
+						v.0[0].x, v.0[1].x, v.0[2].x, 0.0,
+						v.0[0].y, v.0[1].y, v.0[2].y, 0.0,
+						v.0[0].z, v.0[1].z, v.0[2].z, 0.0,
+						     0.0,      0.0,      0.0, 1.0,
+					),
+				)?;
 			}
 			Ok(())
 		}
@@ -815,10 +840,7 @@ pub mod render {
 
 	impl SphereShape {
 		pub fn new(center: Pnt3, radius: R) -> Self {
-			Self {
-				center,
-				radius,
-			}
+			Self { center, radius }
 		}
 	}
 
@@ -918,11 +940,7 @@ pub mod render {
 		prims: Vec<(PrimitiveStyle, PrimitiveShape<'m>)>,
 	}
 
-	impl<
-		'a,
-		'm,
-		M: AffineGeometricMap<GSpace3D, Out = GSpace2D>
-	> SvgRenderer<'a, 'm, M> {
+	impl<'a, 'm, M: AffineGeometricMap<GSpace3D, Out = GSpace2D>> SvgRenderer<'a, 'm, M> {
 		pub fn new(doc: &'a web_sys::Document, map: &'m M) -> Self {
 			let root = svg::root(doc, 2.0);
 			Self {
@@ -940,26 +958,26 @@ pub mod render {
 		fn style_of(&self, s: &PrimitiveStyle) -> svg::Style {
 			match s {
 				PrimitiveStyle::Major => svg::Style {
-					stroke_width: Some(3.0),
+					stroke_width: Some(2.0),
 					..Default::default()
 				},
 				PrimitiveStyle::Minor => svg::Style {
-					stroke_width: Some(2.0),
+					stroke_width: Some(1.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisX => svg::Style {
 					stroke: Some("red".into()),
-					stroke_width: Some(2.0),
+					stroke_width: Some(1.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisY => svg::Style {
 					stroke: Some("green".into()),
-					stroke_width: Some(2.0),
+					stroke_width: Some(1.0),
 					..Default::default()
 				},
 				PrimitiveStyle::AxisZ => svg::Style {
 					stroke: Some("blue".into()),
-					stroke_width: Some(2.0),
+					stroke_width: Some(1.0),
 					..Default::default()
 				},
 			}
@@ -1000,7 +1018,7 @@ pub mod render {
 		}
 
 		fn tesselate(
-			&self
+			&self,
 		) -> impl Iterator<Item = (&PrimitiveStyle, TesselatedPrimitiveShape)> + Clone {
 			// let segment_count = self.prims.iter()
 			// 	.filter(|x| matches!(x.1, PrimitiveShape::Segment(..))).count();
@@ -1023,7 +1041,8 @@ pub mod render {
 					if i == j {
 						continue;
 					}
-					let [(st1, (a1, ts, b1)), (st2, (a2, _, b2))] = tess_lines.get_disjoint_mut([i, j]).unwrap();
+					let [(st1, (a1, ts, b1)), (st2, (a2, _, b2))] =
+						tess_lines.get_disjoint_mut([i, j]).unwrap();
 					if st1.is_transparent() || st2.is_transparent() {
 						continue;
 					}
@@ -1051,8 +1070,11 @@ pub mod render {
 				.into_iter()
 				.map(|(st, (a, ts, b))| (st, TesselatedPrimitiveShape::Segment(a, ts, b)))
 				.chain(self.prims.iter().filter_map(|(st, pr)| match pr {
-					PrimitiveShape::Sphere(center, radius) =>
-						Some((st, TesselatedPrimitiveShape::Sphere(*center, *radius, vec![]))),
+					PrimitiveShape::Sphere(center, radius) => Some((
+						st,
+						TesselatedPrimitiveShape::Sphere(*center, *radius,
+							vec![(Vct3::new(0.0, 0.0, 1.0), 0.0)]),
+					)),
 					_ => None,
 				}))
 		}
@@ -1061,7 +1083,7 @@ pub mod render {
 			let tesselated = self.tesselate();
 			let tess_lines = tesselated.clone().filter_map(|(st, pr)| match pr {
 				TesselatedPrimitiveShape::Segment(a, tess, c) => Some((st, a, tess, c)),
-				_ => None
+				_ => None,
 			});
 			for (_, (st, a, tess, c)) in tess_lines.enumerate() {
 				let mut o = a;
@@ -1104,12 +1126,13 @@ pub mod render {
 
 			let tess_spheres = tesselated.clone().filter_map(|(st, pr)| match pr {
 				TesselatedPrimitiveShape::Sphere(c, r, tess) => Some((st, c, r, tess)),
-				_ => None
+				_ => None,
 			});
 
 			for (_, (st, c, r, tess)) in tess_spheres.enumerate() {
-				self.root.append_child(
-					&svg::circle(
+				self
+					.root
+					.append_child(&svg::circle(
 						self.doc,
 						self.map.project_point(c),
 						// TODO
@@ -1117,13 +1140,23 @@ pub mod render {
 						&svg::Style {
 							fill: Some("none".into()),
 							..self.style_of(st)
-						}
-					)
-				).unwrap();
-				for (norm, dist) in tess {
+						},
+					))
+					.unwrap();
+				for (n, d) in tess {
 					let mtx = self.map.matrix();
-
-					// t.
+					let nm = n.magnitude();
+					let d2 = d / nm;
+					self.root.append_child(&svg::circle(
+						self.doc,
+						Pnt2::new(0.0, 0.0), // self.map.project_point(c + n * d),
+						(r*r - d2*d2).sqrt(),
+						&svg::Style {
+							fill: Some("none".into()),
+							transform_matrix: Some(mtx),
+							..self.style_of(&PrimitiveStyle::Minor)
+						}
+					)).unwrap();
 				}
 			}
 

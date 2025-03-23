@@ -10,6 +10,7 @@ Todo list:
 - [x] Fix precision issues (?).
 - [ ] Do 3D tesselation before 2D tesselation.
 - [ ] Add support for spheres and circular arcs.
+  - [x] Partial, using `style="transform: matrix3d(...)"` for now.
 - [ ] Add support for vectors (arrows).
 - [ ] (long-term) integrate with Typst and Cetz.
 
